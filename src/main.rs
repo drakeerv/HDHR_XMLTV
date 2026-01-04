@@ -28,6 +28,29 @@ where
     }
 }
 
+// Custom deserializer for optional integer-to-boolean conversion
+fn deserialize_option_int_as_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        Some(serde_json::Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Some(i != 0))
+            } else if let Some(f) = n.as_f64() {
+                Ok(Some(f != 0.0))
+            } else {
+                Ok(Some(false))
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => Ok(Some(b)),
+        Some(serde_json::Value::Null) | None => Ok(None),
+        _ => Err(Error::custom("expected integer, boolean, or null")),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DiscoverResponse {
     #[serde(rename = "DeviceAuth")]
@@ -86,7 +109,7 @@ struct Programme {
     image_url: Option<String>,
     #[serde(rename = "OriginalAirdate", default)]
     original_airdate: Option<i64>,
-    #[serde(rename = "First", default)]
+    #[serde(rename = "First", default, deserialize_with = "deserialize_option_int_as_bool")]
     first: Option<bool>,
     #[serde(skip)]
     guide_number: Option<String>,
@@ -174,11 +197,16 @@ async fn fetch_epg_data(
             .send()
             .await
             .context("Failed to fetch EPG data")?;
+
+        let status = response.status();
+        let text = response.text().await.context("Failed to read response body")?;
+
+        if !status.is_success() {
+            anyhow::bail!("EPG request failed with status {}: {}", status, text);
+        }
         
-        let epg_segment: Vec<ChannelEpgSegment> = response
-            .json()
-            .await
-            .context("Failed to parse EPG segment")?;
+        let epg_segment: Vec<ChannelEpgSegment> = serde_json::from_str(&text)
+            .with_context(|| format!("Failed to parse EPG segment. Response text: {}", text))?;
         
         info!(
             "Processing from {}",
