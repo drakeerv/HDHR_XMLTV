@@ -103,14 +103,22 @@ async fn fetch_epg_data(
     days: i64,
     hours: i64,
 ) -> Result<EpgData> {
+    use std::collections::HashSet;
+    
     let mut epg_data = EpgData {
         channels: Vec::new(),
         programmes: Vec::new(),
     };
     
+    // Track seen programmes for O(1) duplicate detection
+    let mut seen_programmes: HashSet<(i64, String, String)> = HashSet::new();
+    
     let mut next_start_date = Utc::now();
     let end_time = next_start_date + Duration::days(days);
     
+    // NOTE: HDHomeRun API uses a self-signed certificate, so we need to accept invalid certs.
+    // This matches the behavior of the original Python script which used an unverified SSL context.
+    // The connection is still encrypted, but certificate validation is skipped.
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()?;
@@ -160,19 +168,21 @@ async fn fetch_epg_data(
                 }
                 
                 // Check if the epg program has already been retrieved due to overlapping requests
-                let is_duplicate = epg_data.programmes.iter().any(|p| {
-                    p.start_time == programme.start_time
-                        && p.title == programme.title
-                        && p.guide_number.as_ref() == Some(&channel_epg_segment.guide_number)
-                });
+                let programme_key = (
+                    programme.start_time,
+                    programme.title.clone(),
+                    channel_epg_segment.guide_number.clone(),
+                );
                 
-                if is_duplicate {
+                if seen_programmes.contains(&programme_key) {
                     debug!(
                         "Skipping duplicate program {} starting at {}",
                         programme.title, programme.start_time
                     );
                     continue;
                 }
+                
+                seen_programmes.insert(programme_key);
                 
                 // Add channel to epg_data if not already present
                 if !epg_data
@@ -202,13 +212,13 @@ async fn fetch_epg_data(
     Ok(epg_data)
 }
 
-fn format_datetime(timestamp: i64, tz: &chrono_tz::Tz) -> String {
-    let dt = Utc.timestamp_opt(timestamp, 0).unwrap();
+fn format_datetime(timestamp: i64, tz: &chrono_tz::Tz) -> Option<String> {
+    let dt = Utc.timestamp_opt(timestamp, 0).single()?;
     let local_dt = dt.with_timezone(tz);
     let offset_seconds = local_dt.offset().fix().local_minus_utc();
     let offset_hours = offset_seconds / 3600;
     let offset_minutes = (offset_seconds % 3600).abs() / 60;
-    format!(
+    Some(format!(
         "{:04}{:02}{:02}{:02}{:02}{:02} {:+03}{:02}",
         local_dt.year(),
         local_dt.month(),
@@ -218,15 +228,27 @@ fn format_datetime(timestamp: i64, tz: &chrono_tz::Tz) -> String {
         local_dt.second(),
         offset_hours,
         offset_minutes
-    )
+    ))
 }
 
 fn generate_xmltv(epg_data: EpgData, output_path: &Path, timezone: &chrono_tz::Tz) -> Result<()> {
     use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
     use quick_xml::Writer;
+    use std::collections::HashMap;
     use std::io::Cursor;
     
     info!("HDHomeRun XMLTV Transformation Started");
+    
+    // Organize programmes by channel for O(1) lookup
+    let mut programmes_by_channel: HashMap<String, Vec<&Programme>> = HashMap::new();
+    for programme in &epg_data.programmes {
+        if let Some(ref guide_number) = programme.guide_number {
+            programmes_by_channel
+                .entry(guide_number.clone())
+                .or_insert_with(Vec::new)
+                .push(programme);
+        }
+    }
     
     let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b'\t', 1);
     
@@ -262,13 +284,22 @@ fn generate_xmltv(epg_data: EpgData, output_path: &Path, timezone: &chrono_tz::T
     
     // Write programmes
     for channel in &epg_data.channels {
-        for programme in &epg_data.programmes {
-            if programme.guide_number.as_ref() != Some(&channel.guide_number) {
-                continue;
-            }
-            
-            let start_str = format_datetime(programme.start_time, timezone);
-            let end_str = format_datetime(programme.end_time, timezone);
+        if let Some(programmes) = programmes_by_channel.get(&channel.guide_number) {
+            for programme in programmes {
+                let start_str = format_datetime(programme.start_time, timezone);
+                let end_str = format_datetime(programme.end_time, timezone);
+                
+                // Skip programmes with invalid timestamps
+                let (start_str, end_str) = match (start_str, end_str) {
+                    (Some(s), Some(e)) => (s, e),
+                    _ => {
+                        warn!(
+                            "Skipping programme {} with invalid timestamp",
+                            programme.title
+                        );
+                        continue;
+                    }
+                };
             
             let mut prog_elem = BytesStart::new("programme");
             prog_elem.push_attribute(("start", start_str.as_str()));
@@ -354,30 +385,33 @@ fn generate_xmltv(epg_data: EpgData, output_path: &Path, timezone: &chrono_tz::T
             
             // Previously shown / New
             if let Some(original_airdate) = programme.original_airdate {
-                let air_date = Utc.timestamp_opt(original_airdate, 0).unwrap().with_timezone(timezone);
-                let start_time = Utc.timestamp_opt(programme.start_time, 0).unwrap().with_timezone(timezone);
-                let start_date = start_time
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_local_timezone(*timezone)
-                    .unwrap();
-                
-                if air_date != start_date {
-                    let air_date_str = format!(
-                        "{:04}{:02}{:02}{:02}{:02}{:02}",
-                        air_date.year(),
-                        air_date.month(),
-                        air_date.day(),
-                        air_date.hour(),
-                        air_date.minute(),
-                        air_date.second()
-                    );
-                    let mut prev_elem = BytesStart::new("previously-shown");
-                    prev_elem.push_attribute(("start", air_date_str.as_str()));
-                    writer.write_event(Event::Empty(prev_elem))?;
-                } else if programme.first != Some(true) {
-                    writer.write_event(Event::Empty(BytesStart::new("previously-shown")))?;
+                if let (Some(air_date_dt), Some(start_time_dt)) = (
+                    Utc.timestamp_opt(original_airdate, 0).single(),
+                    Utc.timestamp_opt(programme.start_time, 0).single(),
+                ) {
+                    let air_date = air_date_dt.with_timezone(timezone);
+                    let start_time = start_time_dt.with_timezone(timezone);
+                    
+                    if let Some(start_date_naive) = start_time.date_naive().and_hms_opt(0, 0, 0) {
+                        if let Some(start_date) = start_date_naive.and_local_timezone(*timezone).single() {
+                            if air_date != start_date {
+                                let air_date_str = format!(
+                                    "{:04}{:02}{:02}{:02}{:02}{:02}",
+                                    air_date.year(),
+                                    air_date.month(),
+                                    air_date.day(),
+                                    air_date.hour(),
+                                    air_date.minute(),
+                                    air_date.second()
+                                );
+                                let mut prev_elem = BytesStart::new("previously-shown");
+                                prev_elem.push_attribute(("start", air_date_str.as_str()));
+                                writer.write_event(Event::Empty(prev_elem))?;
+                            } else if programme.first != Some(true) {
+                                writer.write_event(Event::Empty(BytesStart::new("previously-shown")))?;
+                            }
+                        }
+                    }
                 }
             }
             
@@ -386,6 +420,7 @@ fn generate_xmltv(epg_data: EpgData, output_path: &Path, timezone: &chrono_tz::T
             }
             
             writer.write_event(Event::End(BytesEnd::new("programme")))?;
+            }
         }
     }
     
