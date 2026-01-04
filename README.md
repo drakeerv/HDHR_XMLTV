@@ -228,7 +228,9 @@ Set the log level using the `RUST_LOG` environment variable.
 
 ## License
 
-GPL - See LICENSE file for details
+MIT License - See LICENSE file for details
+
+This is a clean-room implementation inspired by the original Python script by Incubus Victim.
 
 ## Credits
 

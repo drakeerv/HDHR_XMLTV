@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  hdhr-xmltv:
+    image: ghcr.io/drakeerv/hdhr-xmltv:latest
+    container_name: hdhr-xmltv
+    security_opt:
+      - label=disable
+    volumes:
+      - ./xmltv:/output:Z
+    environment:
+      # HDHomeRun device IP address or hostname
+      # Can use either HDHR_IP or HDHR_HOST
+      - HDHR_IP=192.168.10.15
+      
+      # Timezone for EPG times
+      # Can use either TZ or TIMEZONE
+      - TZ=America/New_York
+      
+      # Number of days of EPG data to fetch (max ~14)
+      - DAYS=1
+      
+      # Update interval in seconds (14400 = 4 hours)
+      # Set to 0 to run once and exit
+      - INTERVAL=14400
+      
+      # Output filename
+      - OUTPUT_FILE=hdhomerun.xml
+      
+      # Log level (error, warn, info, debug, trace)
+      - RUST_LOG=info
+      
+    restart: always
