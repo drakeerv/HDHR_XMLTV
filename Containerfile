@@ -23,8 +23,6 @@ COPY --from=builder /app/target/release/hdhr-xmltv /usr/local/bin/hdhr-xmltv
 RUN mkdir -p /output
 
 # Default environment variables
-# Supports HDHR_HOST or HDHR_IP for host configuration
-# Supports TIMEZONE or TZ for timezone configuration
 ENV HDHR_HOST=hdhomerun.local
 ENV DAYS=7
 ENV HOURS=3
