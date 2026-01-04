@@ -1,9 +1,32 @@
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Offset, TimeZone, Timelike, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::env;
 use std::path::Path;
 use tracing::{debug, info, warn};
+
+// Custom deserializer for integer-to-boolean conversion
+fn deserialize_int_as_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i != 0)
+            } else if let Some(f) = n.as_f64() {
+                Ok(f != 0.0)
+            } else {
+                Ok(false)
+            }
+        }
+        serde_json::Value::Bool(b) => Ok(b),
+        serde_json::Value::Null => Ok(false),
+        _ => Err(Error::custom("expected integer, boolean, or null for HD field")),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct DiscoverResponse {
@@ -21,6 +44,16 @@ struct Channel {
     url: Option<String>,
     #[serde(rename = "ImageURL", default)]
     image_url: Option<String>,
+    #[serde(rename = "HD", default, deserialize_with = "deserialize_int_as_bool")]
+    hd: bool,
+    #[serde(rename = "VideoCodec", default)]
+    video_codec: Option<String>,
+    #[serde(rename = "AudioCodec", default)]
+    audio_codec: Option<String>,
+    #[serde(rename = "SignalStrength", default)]
+    signal_strength: Option<i32>,
+    #[serde(rename = "SignalQuality", default)]
+    signal_quality: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,9 +505,7 @@ async fn main() -> Result<()> {
         .init();
     
     // Read configuration from environment variables
-    // Support both HDHR_HOST and HDHR_IP for compatibility
     let host = env::var("HDHR_HOST")
-        .or_else(|_| env::var("HDHR_IP"))
         .unwrap_or_else(|_| "hdhomerun.local".to_string());
     let days = env::var("DAYS")
         .ok()
@@ -490,9 +521,7 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    // Support both TIMEZONE and TZ for compatibility
-    let timezone_str = env::var("TIMEZONE")
-        .or_else(|_| env::var("TZ"))
+    let timezone_str = env::var("TZ")
         .unwrap_or_else(|_| "UTC".to_string());
     
     let timezone: chrono_tz::Tz = timezone_str

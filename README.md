@@ -14,16 +14,14 @@ A Rust-based HDHomeRun EPG to XMLTV converter designed to run in a Podman/Docker
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HDHR_HOST` or `HDHR_IP` | `hdhomerun.local` | IP address or hostname of your HDHomeRun device |
+| `HDHR_HOST` | `hdhomerun.local` | IP address or hostname of your HDHomeRun device |
 | `DAYS` | `7` | Number of days of EPG data to fetch (max ~14) |
 | `HOURS` | `3` | Number of hours per guide iteration |
 | `OUTPUT_DIR` | `/output` | Directory where the XMLTV file will be saved |
 | `OUTPUT_FILE` | `epg.xml` | Name of the output XMLTV file |
 | `INTERVAL` | `0` | Update interval in seconds (0 = run once and exit) |
-| `TIMEZONE` or `TZ` | `UTC` | Timezone for program times (e.g., `America/New_York`, `Europe/London`) |
+| `TZ` | `UTC` | Timezone for program times (e.g., `America/New_York`, `Europe/London`) |
 | `RUST_LOG` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
-
-> **Note**: The application supports both `HDHR_HOST`/`HDHR_IP` and `TIMEZONE`/`TZ` for compatibility with existing configurations.
 
 ## Usage
 
